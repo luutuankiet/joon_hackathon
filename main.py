@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 from google.cloud import secretmanager
 from google.cloud import storage
 import tempfile
-import pdfkit
+import fitz
 from datetime import datetime
 
 load_dotenv()
@@ -46,7 +46,7 @@ class ConfluenceDataLoader():
             print(f"Failed to retrieve labels for page ID {page_id}: {response.text}")
             return ''
 
-    # Function to get all pages' details
+        # Function to get all pages' details
     def get_all_pages(self, auth: any):
         api_url = f"{self.CONFLUENCE_URL}/wiki/api/v2/spaces/{self.CONFLUENCE_SPACE_NUMBER}/pages"
         params = {
@@ -54,6 +54,7 @@ class ConfluenceDataLoader():
             "body-format": "storage"
         }
         headers = {"Accept": "application/json"}
+        all_pages_details = []
         while True:
             response = requests.get(api_url, headers=headers, params=params, auth=auth)
             if response.status_code != 200:
@@ -61,7 +62,6 @@ class ConfluenceDataLoader():
                 break
             data = response.json()
             pages = data.get("results", [])
-            all_pages_details = []
             for page in pages:
                 page_id = page.get("id", "")
                 title = page.get("title", "")
@@ -70,6 +70,7 @@ class ConfluenceDataLoader():
                 soup = BeautifulSoup(body, 'html.parser')
                 text_content = soup.get_text().strip()
                 page_url = f"{CONFLUENCE_URL}/wiki/spaces/RF/pages/{page_id}/{title.replace(' ', '+')}"
+                print(f"working on page: {title}")
                 if text_content:
                     labels = self.fetch_page_labels(page_id, auth)
                     page_details = {
@@ -81,30 +82,56 @@ class ConfluenceDataLoader():
                         "url": page_url
                     }
                     all_pages_details.append(page_details)
+            
             if "next" in data.get("_links", {}):
                 api_url = self.CONFLUENCE_URL + data["_links"]["next"]
             else:
                 break
+
+        print(f"Total pages fetched: {len(all_pages_details)}")
         return all_pages_details
 
-    def save_to_pdf(self, content: dict) -> str:
+    def save_all_to_pdf(self, all_contents: list) -> str:
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-            html_content = f"""
-            <h1>{content['title']}</h1>
-            <p>Created: {content['created_at']}</p>
-            <p>Labels: {content['labels']}</p>
-            <p>URL: {content['url']}</p>
-            <div>{content['content']}</div>
-            """
-            pdfkit.from_string(html_content, tmp.name)
+            doc = fitz.open()
+            
+            for content in all_contents:
+                page = doc.new_page()
+                
+                title_block = f"{content['title']}\n\n"
+                metadata_block = (
+                    f"Created: {content['created_at']}\n"
+                    f"Labels: {content['labels']}\n"
+                    f"URL: {content['url']}\n\n"
+                )
+                
+                margin = 50
+                page_width = 595
+                text_width = page_width - 2 * margin
+                
+                page.insert_text((margin, margin), title_block)
+                page.insert_text((margin, margin + 40), metadata_block)
+                
+                rect = fitz.Rect(margin, margin + 120, page_width - margin, 842 - margin)
+                page.insert_textbox(rect, content['content'], 
+                                  fontsize=11,
+                                  align=0,
+                                  lineheight=1.2)
+            
+            doc.save(tmp.name)
+            doc.close()
             return tmp.name
 
-    def upload_to_gcs(self, pdf_path: str, content: dict) -> str:
-        today = datetime.now().strftime('%Y/%m/%d')
-        blob_name = f"confluence_docs/{today}/{content['page_id']}.pdf"
-        blob = self.bucket.blob(blob_name)
+    def clear_bucket(self):
+        blobs = self.bucket.list_blobs()
+        for blob in blobs:
+            blob.delete()
+        print(f"All objects in bucket {GCS_BUCKET_NAME} have been deleted.")
+
+    def upload_to_gcs(self, pdf_path: str, file_name: str) -> str:
+        blob = self.bucket.blob(file_name)
         blob.upload_from_filename(pdf_path)
-        return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
+        return f"gs://{GCS_BUCKET_NAME}/{file_name}"
 
     def run(self):
         auth = requests.auth.HTTPBasicAuth(self.ATLASSIAN_EMAIL_SECRET_NAME, self.ATLASSIAN_TOKEN_SECRET_VALUE)
@@ -112,20 +139,18 @@ class ConfluenceDataLoader():
         page_contents = [page for page in all_pages if page]
         print(f"Total pages found: {len(page_contents)}")
 
-        uploaded_files = []
         if page_contents:
-            for content in page_contents:
-                pdf_path = self.save_to_pdf(content)
-                gcs_path = self.upload_to_gcs(pdf_path, content)
-                uploaded_files.append(gcs_path)
-                os.unlink(pdf_path)
+            self.clear_bucket()
+            pdf_path = self.save_all_to_pdf(page_contents)
+            gcs_path = self.upload_to_gcs(pdf_path, "all_confluence_pages.pdf")
+            os.unlink(pdf_path)
 
-            print(f'Uploaded {len(uploaded_files)} PDFs to GCS')
-            return uploaded_files
+            print(f'Uploaded combined PDF to GCS: {gcs_path}')
+            return gcs_path
         else:
             print("No pages with content were found.")
-            return []
+            return None
 
 if __name__ == "__main__":
     loader = ConfluenceDataLoader()
-    uploaded_files = loader.run()
+    uploaded_file = loader.run()

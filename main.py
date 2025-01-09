@@ -20,7 +20,7 @@ CONFLUENCE_URL = os.getenv('CONFLUENCE_URL')
 CONFLUENCE_SPACE_NUMBER = os.getenv('CONFLUENCE_SPACE_NUMBER')
 ATLASSIAN_TOKEN_SECRET_NAME = os.getenv('ATLASSIAN_TOKEN_SECRET_NAME')
 ATLASSIAN_EMAIL_SECRET_NAME = os.getenv('ATLASSIAN_EMAIL_SECRET_NAME')
-SECRET_PROJECT_ID = os.getenv('SECRET_PROJECT_ID')
+ATLASSIAN_TOKEN_SECRET_VALUE = os.getenv('ATLASSIAN_TOKEN_SECRET_VALUE')
 GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME')
 
 class ConfluenceDataLoader():
@@ -29,18 +29,9 @@ class ConfluenceDataLoader():
         self.CONFLUENCE_SPACE_NUMBER = CONFLUENCE_SPACE_NUMBER
         self.ATLASSIAN_TOKEN_SECRET_NAME = ATLASSIAN_TOKEN_SECRET_NAME
         self.ATLASSIAN_EMAIL_SECRET_NAME = ATLASSIAN_EMAIL_SECRET_NAME
-        self.SECRET_PROJECT_ID = SECRET_PROJECT_ID
-        self.ATLASSIAN_EMAIL = self.read_gcp_secret_value(ATLASSIAN_EMAIL_SECRET_NAME)
-        self.ATLASSIAN_TOKEN = self.read_gcp_secret_value(ATLASSIAN_TOKEN_SECRET_NAME)
+        self.ATLASSIAN_TOKEN_SECRET_VALUE = ATLASSIAN_TOKEN_SECRET_VALUE
         self.storage_client = storage.Client()
         self.bucket = self.storage_client.bucket(GCS_BUCKET_NAME)
-
-    # Function to retrieve value from GCP Secret Manager:
-    def read_gcp_secret_value(self, secret_name: str):
-        client = secretmanager.SecretManagerServiceClient()
-        secret_version = f"projects/{self.SECRET_PROJECT_ID}/secrets/{secret_name}/versions/latest"
-        response = client.access_secret_version(request={"name": secret_version})
-        return response.payload.data.decode("UTF-8")
 
     # Function to get page's labels based on page_id
     def fetch_page_labels(self, page_id: str, auth: any):
@@ -116,7 +107,7 @@ class ConfluenceDataLoader():
         return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
 
     def run(self):
-        auth = requests.auth.HTTPBasicAuth(self.ATLASSIAN_EMAIL, self.ATLASSIAN_TOKEN)
+        auth = requests.auth.HTTPBasicAuth(self.ATLASSIAN_EMAIL_SECRET_NAME, self.ATLASSIAN_TOKEN_SECRET_VALUE)
         all_pages = self.get_all_pages(auth)
         page_contents = [page for page in all_pages if page]
         print(f"Total pages found: {len(page_contents)}")

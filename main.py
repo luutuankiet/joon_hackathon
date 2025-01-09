@@ -3,10 +3,8 @@ from dotenv import load_dotenv
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from google.cloud import secretmanager
 from google.cloud import storage
 import tempfile
-import fitz
 from datetime import datetime
 
 load_dotenv()
@@ -91,36 +89,18 @@ class ConfluenceDataLoader():
         print(f"Total pages fetched: {len(all_pages_details)}")
         return all_pages_details
 
-    def save_all_to_pdf(self, all_contents: list) -> str:
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-            doc = fitz.open()
-            
+    def save_all_to_text(self, all_contents: list) -> str:
+        with tempfile.NamedTemporaryFile(suffix='.txt', delete=False, mode='w') as tmp:
             for content in all_contents:
-                page = doc.new_page()
-                
-                title_block = f"{content['title']}\n\n"
-                metadata_block = (
-                    f"Created: {content['created_at']}\n"
-                    f"Labels: {content['labels']}\n"
-                    f"URL: {content['url']}\n\n"
-                )
-                
-                margin = 50
-                page_width = 595
-                text_width = page_width - 2 * margin
-                
-                page.insert_text((margin, margin), title_block)
-                page.insert_text((margin, margin + 40), metadata_block)
-                
-                rect = fitz.Rect(margin, margin + 120, page_width - margin, 842 - margin)
-                page.insert_textbox(rect, content['content'], 
-                                  fontsize=11,
-                                  align=0,
-                                  lineheight=1.2)
-            
-            doc.save(tmp.name)
-            doc.close()
+                tmp.write(f"Title: {content['title']}\n")
+                tmp.write(f"Created: {content['created_at']}\n")
+                tmp.write(f"Labels: {content['labels']}\n")
+                tmp.write(f"URL: {content['url']}\n\n")
+                tmp.write(content['content'])
+                tmp.write("\n\n" + "="*80 + "\n\n")  # Separator between pages
             return tmp.name
+
+
 
     def clear_bucket(self):
         blobs = self.bucket.list_blobs()
@@ -128,9 +108,9 @@ class ConfluenceDataLoader():
             blob.delete()
         print(f"All objects in bucket {GCS_BUCKET_NAME} have been deleted.")
 
-    def upload_to_gcs(self, pdf_path: str, file_name: str) -> str:
+    def upload_to_gcs(self, file_path: str, file_name: str) -> str:
         blob = self.bucket.blob(file_name)
-        blob.upload_from_filename(pdf_path)
+        blob.upload_from_filename(file_path)
         return f"gs://{GCS_BUCKET_NAME}/{file_name}"
 
     def run(self):
@@ -141,11 +121,11 @@ class ConfluenceDataLoader():
 
         if page_contents:
             self.clear_bucket()
-            pdf_path = self.save_all_to_pdf(page_contents)
-            gcs_path = self.upload_to_gcs(pdf_path, "all_confluence_pages.pdf")
-            os.unlink(pdf_path)
+            text_path = self.save_all_to_text(page_contents)
+            gcs_path = self.upload_to_gcs(text_path, "all_confluence_pages.txt")
+            os.unlink(text_path)
 
-            print(f'Uploaded combined PDF to GCS: {gcs_path}')
+            print(f'Uploaded combined text file to GCS: {gcs_path}')
             return gcs_path
         else:
             print("No pages with content were found.")

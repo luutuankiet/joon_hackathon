@@ -12,7 +12,7 @@ from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
 from google.cloud import storage
 
 # Initialize Vertex AI with your project-id and a location
-PROJECT_ID = 'joon-hackathon-chatbot'
+PROJECT_ID = 'joon-sandbox'
 LOCATION = "asia-southeast1" # @param {type:"string"}
 
 vertexai.init(project=PROJECT_ID, location=LOCATION)
@@ -43,11 +43,14 @@ chunked_embeddings = embedding_model.embed_documents(raw_data)
 chunked_content = pickle.load(open("chunked_content.pkl", "rb"))
 chunked_embeddings = pickle.load(open("chunked_embeddings.pkl", "rb"))
 
-# Populate a db variable with a Firestore Client.
-# Use the correct project ID and location for Firestore
-db = firestore.Client(project=PROJECT_ID)
+# Initializing the Firebase client
+database_name = "joon-hackathon-chatbot"
 
-collection = db.collection("food-safety")
+# Set up the Firestore client
+db = firestore.Client(project=PROJECT_ID, database=database_name)
+
+# TODO: Instantiate a collection reference
+collection = db.collection("confluence")
 
 # Using a combination of our lists chunked_content and chunked_embeddings,
 # add a document to your collection for each of your chunked documents.
@@ -78,4 +81,4 @@ def search_vector_database(query: str):
 
     return context
 
-search_vector_database("How should I store food?")
+search_vector_database("Give me the latest blog")

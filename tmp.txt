@@ -1,0 +1,90 @@
+[m[1mNAME[m
+    gcloud auth - manage oauth2 credentials for the Google Cloud CLI
+
+[m[1mSYNOPSIS[m
+    [1mgcloud auth[m [4mGROUP[m | [4mCOMMAND[m [[4mGCLOUD_WIDE_FLAG ...[m]
+
+[m[1mDESCRIPTION[m
+    The [1mgcloud auth[m command group lets you grant and revoke authorization to
+    Google Cloud CLI ([1mgcloud[m CLI) to access Google Cloud. Typically, when
+    scripting Google Cloud CLI tools for use on multiple machines, using [1mgcloud
+    auth activate-service-account[m is recommended.
+
+    For information about authorization and credential types, see Authorizing
+    the gcloud CLI (https://cloud.google.com/sdk/docs/authorizing). For
+    information about authorizing a service account, see Authorizing with a
+    service account
+    (https://cloud.google.com/sdk/docs/authorizing#service-account).
+
+    After running [1mgcloud auth[m commands, you can run other commands with
+    [1m--account[m=[1m[1;4mACCOUNT[1m[m to authenticate the command with the credentials of the
+    specified account. For information about [1m--account[m and other [1mgcloud[m CLI
+    global flags, see the gcloud CLI overview
+    (https://cloud.google.com/sdk/gcloud/reference).
+
+    See [1m$ gcloud topic client-certificate[m to learn how to use Mutual TLS when
+    using gcloud. Mutual TLS can be used for certificate based access
+    (https://cloud.google.com/beyondcorp-enterprise/docs/securing-resources-with-certificate-based-access)
+    with gcloud.
+
+[m[1mEXAMPLES[m
+    To authenticate a user account with [1mgcloud[m and minimal user output, run:
+
+        $ gcloud auth login --brief
+
+    To list all credentialed accounts and identify the current active account,
+    run:
+
+        $ gcloud auth list
+
+    To revoke credentials for a user account (like logging out), run:
+
+        $ gcloud auth revoke test@gmail.com
+
+[m[1mGCLOUD WIDE FLAGS[m
+    These flags are available to all commands: --help.
+
+    Run [1m$ gcloud help[m for details.
+
+[m[1mGROUPS[m
+    [1m[1;4mGROUP[1m[m is one of the following:
+
+     [1mapplication-default[m
+        Manage your active Application Default Credentials.
+
+     [1menterprise-certificate-config[m
+        Manage enterprise certificate configurations.
+
+[m[1mCOMMANDS[m
+    [1m[1;4mCOMMAND[1m[m is one of the following:
+
+     [1mactivate-service-account[m
+        Authorize access to Google Cloud with a service account.
+
+     [1mconfigure-docker[m
+        Register [1mgcloud[m as a Docker credential helper.
+
+     [1mlist[m
+        Lists credentialed accounts.
+
+     [1mlogin[m
+        Authorize gcloud to access the Cloud Platform with Google user
+        credentials.
+
+     [1mprint-access-token[m
+        Print an access token for the specified account.
+
+     [1mprint-identity-token[m
+        Print an identity token for the specified account.
+
+     [1mrevoke[m
+        Revoke access credentials for an account.
+
+[m[1mNOTES[m
+    These variants are also available:
+
+        $ gcloud alpha auth
+
+        $ gcloud beta auth
+
+[m

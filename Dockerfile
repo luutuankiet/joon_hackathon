@@ -1,6 +1,6 @@
 FROM python:3.9
 WORKDIR /app
-COPY chatbot.py index.html requirements_chatbot.txt .
+COPY . .
 RUN pip install gunicorn
 RUN pip install -r requirements_chatbot.txt
 ENV PORT=8080

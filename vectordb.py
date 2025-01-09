@@ -1,7 +1,5 @@
 import logging
 import vertexai
-from vertexai.language_models import TextEmbeddingModel
-from vertexai.generative_models import GenerativeModel
 
 from langchain_google_vertexai import VertexAIEmbeddings
 
@@ -44,8 +42,8 @@ file_name = "all_confluence_pages.txt"
 raw_data = load_txt_from_gcs(bucket_name, file_name)
 
 # Demo: Limit to the first 1000 characters for quick testing
-demo_data = raw_data[-10000:]  # Adjust this limit as needed for a quick demo
-# demo_data = raw_data[:10000]  # Adjust this limit as needed for a quick demo
+demo_data = raw_data[-100000:]  # Adjust this limit as needed for a quick demo
+# demo_data = raw_data  # Adjust this limit as needed for a quick demo
 
 # Use the embedding_model to generate embeddings of the demo text chunks
 logging.info("Generating embeddings for the demo text chunks")

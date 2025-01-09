@@ -1,0 +1,24 @@
+# Web and Data Processing
+requests>=2.31.0
+pandas>=2.1.1
+beautifulsoup4>=4.12.2
+
+# Google Cloud
+google-cloud-secret-manager>=2.16.1
+google-cloud-bigquery>=3.11.4
+
+# Apache Airflow
+apache-airflow>=2.7.1
+apache-airflow-providers-google>=10.11.0
+
+# Time handling
+pendulum>=2.1.2
+
+# Vector Database Dependencies (from vectordb.py)
+google-cloud-firestore>=2.11.1
+vertexai>=0.0.1
+langchain-google-vertexai>=0.0.1
+langchain-community>=0.0.1
+langchain-experimental>=0.0.1
+PyMuPDF>=1.23.7
+ipython>=8.12.2

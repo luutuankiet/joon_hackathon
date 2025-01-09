@@ -28,8 +28,10 @@ embedding_model = VertexAIEmbeddings(model_name="text-embedding-004")
 # https://python.langchain.com/v0.1/docs/modules/data_connection/document_loaders/pdf/#using-pymupdf
 # Use the LangChain class PyMuPDFLoader to load the contents of the PDF
 from langchain_community.document_loaders import PyMuPDFLoader
+# TODO : move this to  gcs
 loader = PyMuPDFLoader("./nyc_food_safety_manual.pdf")
 data = loader.load()
+
 
 # Create a function to do some basic cleaning on artifacts found in this particular document.
 def clean_page(page):

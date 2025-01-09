@@ -1,43 +1,27 @@
+import os
+from dotenv import load_dotenv
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from google.cloud import secretmanager
+from google.cloud import storage
+import tempfile
+import pdfkit
+from datetime import datetime
 
-from airflow import DAG
-from airflow.operators.empty import EmptyOperator
-from airflow.operators.python_operator import PythonOperator
-from airflow.providers.google.cloud.operators.bigquery import (
-    BigQueryCreateEmptyTableOperator,
-    BigQueryDeleteTableOperator,
-    BigQueryValueCheckOperator
-)
-from google.cloud import bigquery
-from airflow.models.param import Param
-from common.common_var import (
-    IS_DEV
-)
-from pendulum import duration, datetime
-from datetime import timedelta
+load_dotenv()
 
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_colwidth', None)
 pd.set_option('display.max_columns', None)
 
-# Replace these values with your Confluence URL and the name of your secret in Secret Manager
-CONFLUENCE_URL = "https://restoreportal.atlassian.net"
-# The number id of Confluence Restore POW space
-# To do: If there is more than one page we need to extract data from, we could use space_id API endpoint
-CONFLUENCE_SPACE_NUMBER = "499155012"
-ATLASSIAN_TOKEN_SECRET_NAME = "atlassian_api_token"  # The name of your atlassian token secret in Secret Manager
-ATLASSIAN_EMAIL_SECRET_NAME = "atlassian_email"  # The name of your atlassian token email in Secret Manager
-SECRET_PROJECT_ID = "restore-bi-dev-orchestration" if IS_DEV else "restore-bi-prod-orchestration"
-
-DEFAULT_DESTINATION_PROJECT_ID = "restore-bi-dev-data-lake" if IS_DEV else "restore-bi-prod-data-lake"
-DEFAULT_DESTINATION_DATASET_ID = "rf_confluence"
-DEFAULT_DESTINATION_TABLE_ID = "rf_confluence_content"
-
-GCP_CONN_ID = "gcloud_dev_data_lake" if IS_DEV else "gcloud_prod_data_lake"
-
+# Environment variables
+CONFLUENCE_URL = os.getenv('CONFLUENCE_URL')
+CONFLUENCE_SPACE_NUMBER = os.getenv('CONFLUENCE_SPACE_NUMBER')
+ATLASSIAN_TOKEN_SECRET_NAME = os.getenv('ATLASSIAN_TOKEN_SECRET_NAME')
+ATLASSIAN_EMAIL_SECRET_NAME = os.getenv('ATLASSIAN_EMAIL_SECRET_NAME')
+SECRET_PROJECT_ID = os.getenv('SECRET_PROJECT_ID')
+GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME')
 
 class ConfluenceDataLoader():
     def __init__(self):
@@ -46,9 +30,10 @@ class ConfluenceDataLoader():
         self.ATLASSIAN_TOKEN_SECRET_NAME = ATLASSIAN_TOKEN_SECRET_NAME
         self.ATLASSIAN_EMAIL_SECRET_NAME = ATLASSIAN_EMAIL_SECRET_NAME
         self.SECRET_PROJECT_ID = SECRET_PROJECT_ID
-        self.GCP_CONN_ID = GCP_CONN_ID
         self.ATLASSIAN_EMAIL = self.read_gcp_secret_value(ATLASSIAN_EMAIL_SECRET_NAME)
         self.ATLASSIAN_TOKEN = self.read_gcp_secret_value(ATLASSIAN_TOKEN_SECRET_NAME)
+        self.storage_client = storage.Client()
+        self.bucket = self.storage_client.bucket(GCS_BUCKET_NAME)
 
     # Function to retrieve value from GCP Secret Manager:
     def read_gcp_secret_value(self, secret_name: str):
@@ -111,107 +96,45 @@ class ConfluenceDataLoader():
                 break
         return all_pages_details
 
-    # Default function for the class to transform and load all necessary data to BigQuery destination table
-    def __call__(self, **kwargs):
-        DESTINATION_PROJECT_ID = kwargs["destination_project_id"]
-        DESTINATION_DATASET_ID = kwargs["destination_dataset_id"]
-        DESTINATION_TABLE_ID = kwargs["destination_table_id"]
+    def save_to_pdf(self, content: dict) -> str:
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+            html_content = f"""
+            <h1>{content['title']}</h1>
+            <p>Created: {content['created_at']}</p>
+            <p>Labels: {content['labels']}</p>
+            <p>URL: {content['url']}</p>
+            <div>{content['content']}</div>
+            """
+            pdfkit.from_string(html_content, tmp.name)
+            return tmp.name
 
+    def upload_to_gcs(self, pdf_path: str, content: dict) -> str:
+        today = datetime.now().strftime('%Y/%m/%d')
+        blob_name = f"confluence_docs/{today}/{content['page_id']}.pdf"
+        blob = self.bucket.blob(blob_name)
+        blob.upload_from_filename(pdf_path)
+        return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
+
+    def run(self):
         auth = requests.auth.HTTPBasicAuth(self.ATLASSIAN_EMAIL, self.ATLASSIAN_TOKEN)
         all_pages = self.get_all_pages(auth)
         page_contents = [page for page in all_pages if page]
         print(f"Total pages found: {len(page_contents)}")
 
+        uploaded_files = []
         if page_contents:
+            for content in page_contents:
+                pdf_path = self.save_to_pdf(content)
+                gcs_path = self.upload_to_gcs(pdf_path, content)
+                uploaded_files.append(gcs_path)
+                os.unlink(pdf_path)
 
-            df_page_contents = pd.DataFrame(page_contents)
-            client = bigquery.Client()
-            table_ref = f"{DESTINATION_PROJECT_ID}.{DESTINATION_DATASET_ID}.{DESTINATION_TABLE_ID}"
-            client.load_table_from_dataframe(df_page_contents, table_ref)
-            print(f'Loaded {len(df_page_contents)} rows into {DESTINATION_TABLE_ID}')
-
-            kwargs['ti'].xcom_push(key='merged_df_length', value=len(df_page_contents))
+            print(f'Uploaded {len(uploaded_files)} PDFs to GCS')
+            return uploaded_files
         else:
             print("No pages with content were found.")
+            return []
 
-
-default_args = {
-    "owner": "nguyendnb",
-    "depends_on_past": False,
-    "email_on_retry": False,
-    "retries": 1,
-    "retry_delay": duration(minutes=5),
-    "start_date": datetime(2024, 1, 1),
-    "params": {
-        "destination_project_id": Param(
-            default=DEFAULT_DESTINATION_PROJECT_ID,
-            description="Destination project id to ingest data into",
-            type="string",
-        ),
-        "destination_dataset_id": Param(
-            default=DEFAULT_DESTINATION_DATASET_ID,
-            description="Destination dataset id to ingest data into",
-            type="string",
-        ),
-        "destination_table_id": Param(
-            default=DEFAULT_DESTINATION_TABLE_ID,
-            description="Destination table id to ingest data into",
-            type="string",
-        )
-    }
-}
-
-with DAG(
-    'ingest__confluence_to_bigquery',
-    default_args=default_args,
-    description='DAG to snapshot BigQuery tables',
-    schedule_interval=timedelta(days=1),
-    catchup=False
-) as dag:
-
-    start_task = EmptyOperator(task_id='start', dag=dag)
-    end_task = EmptyOperator(task_id='end', dag=dag)
-
-    deleting_existing_table = BigQueryDeleteTableOperator(
-        task_id='deleting_existing_table',
-        deletion_dataset_table="""{{ params.destination_project_id }}.{{ params.destination_dataset_id }}.{{ params.destination_table_id }}""",
-        ignore_if_missing=True,
-        gcp_conn_id=GCP_CONN_ID
-    )
-
-    creating_new_table = BigQueryCreateEmptyTableOperator(
-        task_id='creating_new_empty_table',
-        project_id="{{ params.destination_project_id }}",
-        dataset_id="{{ params.destination_dataset_id }}",
-        table_id="{{ params.destination_table_id }}",
-        schema_fields=[
-            {'name': 'page_id', 'type': 'string'},
-            {'name': 'title', 'type': 'string'},
-            {'name': 'content', 'type': 'string'},
-            {'name': 'labels', 'type': 'string'},
-            {'name': 'created_at', 'type': 'string'},
-            {'name': 'url', 'type': 'string'}
-        ],
-        gcp_conn_id=GCP_CONN_ID
-    )
-
-    loading_dataframe = PythonOperator(
-        task_id='loading_dataframe_to_bigquery',
-        python_callable=ConfluenceDataLoader(),
-        op_kwargs={
-            "destination_project_id": "{{ params.destination_project_id }}",
-            "destination_dataset_id": "{{ params.destination_dataset_id }}",
-            "destination_table_id": "{{ params.destination_table_id }}",
-        },
-        provide_context=True
-    )
-
-    validating_loaded_rows = BigQueryValueCheckOperator(
-        task_id="validating_loaded_rows",
-        sql="SELECT COUNT(*) FROM {{ params.destination_project_id }}.{{ params.destination_dataset_id }}.{{ params.destination_table_id }}",
-        pass_value="{{ task_instance.xcom_pull(task_ids='loading_dataframe_to_bigquery', key='merged_df_length') }}",
-        use_legacy_sql=False,
-        gcp_conn_id=GCP_CONN_ID
-    )
-
-    start_task >> deleting_existing_table >> creating_new_table >> loading_dataframe >> validating_loaded_rows >> end_task
+if __name__ == "__main__":
+    loader = ConfluenceDataLoader()
+    uploaded_files = loader.run()

@@ -22,3 +22,8 @@ langchain-community>=0.0.1
 langchain-experimental>=0.0.1
 PyMuPDF>=1.23.7
 ipython>=8.12.2
+
+python-dotenv>=1.0.0
+
+# PDF Generation
+pdfkit>=1.0.0

@@ -12,18 +12,16 @@ from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
 from google.cloud import storage
 
 # Initialize Vertex AI with your project-id and a location
-PROJECT_ID = 'joon-sandbox'
+PROJECT_ID = 'joon-hackathon-chatbot'
 LOCATION = "asia-southeast1" # @param {type:"string"}
 
 vertexai.init(project=PROJECT_ID, location=LOCATION)
 
 # Populate a variable named embedding_model with an instance of the
 # langchain_google_vertexai class VertexAIEmbeddings.
-from langchain_google_vertexai import VertexAIEmbeddings
 embedding_model = VertexAIEmbeddings(model_name="text-embedding-004")
 
 def load_txt_from_gcs(bucket_name, file_name):
-
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(file_name)
@@ -40,21 +38,16 @@ file_name = "all_confluence_pages.txt"
 raw_data = load_txt_from_gcs(bucket_name, file_name)
 
 # Use the embedding_model to generate embeddings of the text chunks, saving them to a list called chunked_embeddings.
-# To do so, pass your list of chunks to the VertexAIEmbeddings class's embed_documents() method.
-# https://python.langchain.com/v0.2/docs/integrations/text_embedding/google_vertex_ai_palm/
 chunked_embeddings = embedding_model.embed_documents(raw_data)
-
-
 
 chunked_content = pickle.load(open("chunked_content.pkl", "rb"))
 chunked_embeddings = pickle.load(open("chunked_embeddings.pkl", "rb"))
 
-
 # Populate a db variable with a Firestore Client.
-db = firestore.Client(project="qwiklabs-gcp-01-13a2450742aa")
+# Use the correct project ID and location for Firestore
+db = firestore.Client(project=PROJECT_ID)
 
 collection = db.collection("food-safety")
-
 
 # Using a combination of our lists chunked_content and chunked_embeddings,
 # add a document to your collection for each of your chunked documents.
@@ -65,31 +58,24 @@ for i, (content, embedding) in enumerate(zip(chunked_content, chunked_embeddings
         "embedding": Vector(embedding)
     })
 
-
-    
 def search_vector_database(query: str):
+    context = ""
 
-  context = ""
+    # 1. Generate the embedding of the query
+    query_embedding = embedding_model.embed_query(query)
 
-  # 1. Generate the embedding of the query
-  query_embedding = embedding_model.embed_query(query)
+    # 2. Get the 5 nearest neighbors from your collection.
+    vector_query = collection.find_nearest(
+        vector_field="embedding",
+        query_vector=Vector(query_embedding),
+        distance_measure=DistanceMeasure.EUCLIDEAN,
+        limit=5,
+    )
 
-  # 2. Get the 5 nearest neighbors from your collection.
-  # Call the get() method on the result of your call to
-  # find_nearest to retrieve document snapshots.
-  vector_query = collection.find_nearest(
-    vector_field="embedding",
-    query_vector=Vector(query_embedding),
-    distance_measure=DistanceMeasure.EUCLIDEAN,
-    limit=5,
-  )
+    # 3. Call to_dict() on each snapshot to load its data.
+    docs = vector_query.stream()
+    context = [result.to_dict()['content'] for result in docs]
 
-  # 3. Call to_dict() on each snapshot to load its data.
-  # Combine the snapshots into a single string named context
-  docs = vector_query.stream()
-  context = [result.to_dict()['content'] for result in docs]
-
-  return context
-
+    return context
 
 search_vector_database("How should I store food?")

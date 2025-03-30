@@ -28,4 +28,6 @@ python-dotenv>=1.0.0
 # PDF Generation
 PyMuPDF>=1.23.7
 
+streamlit
+
 # https://github.com/JazzCore/python-pdfkit/wiki/Installing-wkhtmltopdf

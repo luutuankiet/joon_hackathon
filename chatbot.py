@@ -25,14 +25,16 @@ SUBTITLE = "Your Friendly Document Expert"
 app = Flask(__name__)
 
 # Initializing the Firebase client
-project_id = "joon_sandbox"
-database_name = "joon-hackathon-chatbot"
+project_id = "joon-sandbox"
+# database_name = "joon-hackathon-chatbot"
+database_name = "test-db"
 
 # Set up the Firestore client
 db = firestore.Client(project=project_id, database=database_name)
 
 # TODO: Instantiate a collection reference
-collection = db.collection("confluence")
+collection = db.collection("dbt_site_pages")
+# collection = db.collection("confluence")
 
 # TODO: Instantiate an embedding model here
 embedding_model = VertexAIEmbeddings(model_name="text-embedding-004")
@@ -55,7 +57,7 @@ def search_vector_database(query: str):
     # Call the get() method on the result of your call to
     # find_neighbors to retrieve document snapshots.
     vector_query = collection.find_nearest(
-        vector_field="embedding",
+        vector_field="embedding_map",
         query_vector=Vector(query_embedding),
         distance_measure=DistanceMeasure.EUCLIDEAN,
         limit=5,
@@ -129,7 +131,7 @@ def main():
     logging.info(
         answer, extra={"labels": {"service": "joon-service", "component": "answer"}}
     )
-    print("Answer: " + answer)
+    # print("Answer: " + answer)
 
     # Display the home page with the required variables set
     config = {

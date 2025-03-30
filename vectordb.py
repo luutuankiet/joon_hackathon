@@ -21,7 +21,8 @@ vertexai.init(project=PROJECT_ID, location=LOCATION)
 
 # Initialize the embedding model
 logging.info("Initializing the embedding model")
-embedding_model = VertexAIEmbeddings(model_name="text-embedding-004")
+# embedding_model = VertexAIEmbeddings(model_name="text-embedding-004")
+embedding_model = VertexAIEmbeddings(model_name="text-embedding-005")
 
 def load_txt_from_gcs(bucket_name, file_name):
     logging.info(f"Loading text from GCS bucket: {bucket_name}, file: {file_name}")

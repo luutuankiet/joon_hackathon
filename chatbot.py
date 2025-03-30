@@ -25,17 +25,19 @@ SUBTITLE = "Your Friendly Document Expert"
 app = Flask(__name__)
 
 # Initializing the Firebase client
-project_id = "joon_sandbox"
-database_name = "joon-hackathon-chatbot"
+project_id = "joon-sandbox"
+# database_name = "joon-hackathon-chatbot"
+database_name = "test-db"
 
 # Set up the Firestore client
 db = firestore.Client(project=project_id, database=database_name)
 
 # TODO: Instantiate a collection reference
-collection = db.collection("confluence")
+collection = db.collection("dbt_site_pages")
+# collection = db.collection("confluence")
 
 # TODO: Instantiate an embedding model here
-embedding_model = VertexAIEmbeddings(model_name="text-embedding-004")
+embedding_model = VertexAIEmbeddings(model_name="text-embedding-005")
 
 # TODO: Instantiate a Generative AI model here
 gen_model = model = GenerativeModel(
@@ -45,32 +47,54 @@ gen_model = model = GenerativeModel(
 # TODO: Implement this function to return relevant context
 # from your vector database
 def search_vector_database(query: str):
-
-    context = ""
-
-    # 1. Generate the embedding of the query
-    query_embedding = embedding_model.embed_query(query)
-
-    # 2. Get the 5 nearest neighbors from your collection.
-    # Call the get() method on the result of your call to
-    # find_neighbors to retrieve document snapshots.
-    vector_query = collection.find_nearest(
-        vector_field="embedding",
-        query_vector=Vector(query_embedding),
-        distance_measure=DistanceMeasure.EUCLIDEAN,
-        limit=5,
-    )
-
-    # 3. Call to_dict() on each snapshot to load its data.
-    # Combine the snapshots into a single string named context
-    docs = vector_query.stream()
-    context = [result.to_dict()['content'] for result in docs]
-
+    # For debugging - check if collection has documents
+    all_docs = list(collection.limit(3).stream())
+    print(f"Collection has {len(all_docs)} documents")
+    if not all_docs:
+        return ["No documents found in the collection."]
+    
+    # 1. Generate the embedding of the query using the same model as data loading
+    try:
+        
+        query_embedding = embedding_model.embed_query(query)
+        
+        # Create a Vector object from the embedding values
+        query_vector = Vector(query_embedding)
+        
+        # 2. Get the 5 nearest neighbors
+        vector_query = collection.find_nearest(
+            vector_field="embedding_map",
+            query_vector=query_vector,  # Use Vector object, not dictionary
+            distance_measure=DistanceMeasure.EUCLIDEAN,
+            limit=5,
+        )
+        # vector_query = collection.find_nearest(
+        #     vector_field="embedding_map",
+        #     query_vector=query_vector,  # Use Vector object, not dictionary
+        #     distance_measure=DistanceMeasure.EUCLIDEAN,
+        #     limit=5,
+        # )
+        
+        # 3. Process results
+        docs = list(vector_query.stream())  # Convert to list to avoid stream consumption issues
+        print(f"Vector query returned {len(docs)} documents")
+        
+        if not docs:
+            return ["No relevant documents found for your query."]
+        
+        # Extract content from documents
+        context = [result.to_dict().get('content', '') for result in docs]
+        context_str = "\n\n".join(context)
+        
+    except Exception as e:
+        print(f"Error in vector search: {e}")
+        context_str = f"Error performing vector search: {str(e)}"
+    
     # Don't delete this logging statement.
     logging.info(
-        context, extra={"labels": {"service": "joon-service", "component": "context"}}
+        context_str, extra={"labels": {"service": "joon-service", "component": "context"}}
     )
-    return context
+    return context_str
 
 # TODO: Implement this function to pass Gemini the context data,
 # generate a response, and return the response text.

@@ -153,7 +153,7 @@ def main():
     logging.info(
         answer, extra={"labels": {"service": "joon-service", "component": "answer"}}
     )
-    print("Answer: " + answer)
+    # print("Answer: " + answer)
 
     # Display the home page with the required variables set
     config = {

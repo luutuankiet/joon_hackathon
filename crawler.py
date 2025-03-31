@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+import time
+import random
+from asyncio import Semaphore, Lock
 
 # Google Cloud imports
 from google.cloud import firestore
@@ -19,13 +22,6 @@ from google.cloud.firestore_v1.vector import Vector
 load_dotenv()
 
 # Initialize Firestore client
-# credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-# if credentials_path and os.path.exists(credentials_path):
-#     credentials = service_account.Credentials.from_service_account_file(credentials_path)
-#     db = firestore.Client(credentials=credentials)
-# else:
-    # Use default credentials
-    # db = firestore.Client()
 db = firestore.Client(database='test-db')
 
 # Initialize Vertex AI
@@ -39,11 +35,13 @@ gemini_model = GenerativeModel(gemini_model_name)
 
 # Initialize embedding model
 embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-005")
-# embedding_model = VertexAIEmbeddings(model_name="text-embedding-004")
 
 # Define the Crawl4AI API endpoint (Docker service)
 CRAWL4AI_API_URL = "http://localhost:11235"
 CRAWL4AI_API_TOKEN = os.getenv("CRAWL4AI_API_TOKEN", "")
+
+# Path for the state file
+STATE_FILE = "crawler_state.json"
 
 @dataclass
 class ProcessedChunk:
@@ -99,10 +97,6 @@ def chunk_text(text: str, chunk_size: int = 5000) -> List[str]:
         start = max(start + 1, end)
 
     return chunks
-
-import time
-import random
-from asyncio import Semaphore, Lock
 
 # Create a rate limiter for Gemini requests
 # Default quota for Gemini 1.5 Pro is 60 requests per minute per project
@@ -223,8 +217,6 @@ async def get_embedding(text: str) -> List[float]:
         # Create a synchronous function to call the embedding model
         def call_embedding_model():
             embeddings = embedding_model.get_embeddings([text])
-            # embeddings = embedding_model.embed_documents([text])
-            # return embeddings
             return embeddings[0].values
         
         # Run the synchronous function in a thread pool
@@ -235,7 +227,6 @@ async def get_embedding(text: str) -> List[float]:
     except Exception as e:
         print(f"Error getting embedding from Vertex AI: {e}")
         # Return a zero vector with the same dimension as the model's output
-        # Gecko model typically returns 768-dimensional embeddings
         return [0.0] * 768
 
 async def process_chunk(chunk: str, chunk_number: int, url: str) -> ProcessedChunk:
@@ -281,7 +272,6 @@ async def insert_chunk(chunk: ProcessedChunk):
             "metadata": chunk.metadata,
             # Store embedding as a map of indices to values
             "embedding_map": Vector(chunk.embedding),
-            # "embedding_map": {str(i): v for i, v in enumerate(chunk.embedding)},
             "created_at": firestore.SERVER_TIMESTAMP
         }
         
@@ -329,73 +319,153 @@ async def process_and_store_document(url: str, markdown: str):
             # Wait longer between batches to stay well under the limit
             await asyncio.sleep(5)  # 5 second delay between batches
 
-async def crawl_parallel(urls: List[str], max_concurrent: int = 10):
-    """Crawl multiple URLs in parallel with a concurrency limit using the Crawl4AI Docker API."""
+def load_state() -> Dict[str, str]:
+    """Load the crawler state from a local file."""
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, 'r') as f:
+                state = json.load(f)
+            print(f"Loaded state file with {len(state)} URLs")
+            
+            # Count URLs by status
+            status_counts = {}
+            for status in state.values():
+                status_counts[status] = status_counts.get(status, 0) + 1
+            
+            for status, count in status_counts.items():
+                print(f"  - {status}: {count}")
+                
+            return state
+        except Exception as e:
+            print(f"Error loading state file: {e}")
+            return {}
+    else:
+        print("No state file found, starting fresh")
+        return {}
+
+def save_state(state: Dict[str, str]):
+    """Save the crawler state to a local file."""
+    try:
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        print(f"Error saving state file: {e}")
+
+async def process_url(url: str, semaphore: asyncio.Semaphore, state: Dict[str, str], state_lock: asyncio.Lock):
+    """Process a single URL with local state tracking for resumability."""
+    # Check if this URL has already been successfully processed
+    if state.get(url) == 'completed':
+        print(f"Skipping already processed URL: {url}")
+        return
+    
+    # Mark URL as being processed
+    async with state_lock:
+        state[url] = 'processing'
+        save_state(state)
+    
+    async with semaphore:
+        # Prepare the request payload for the Docker API
+        headers = {"Authorization": f"Bearer {CRAWL4AI_API_TOKEN}"} if CRAWL4AI_API_TOKEN else {}
+        payload = {
+            "urls": url,
+            "priority": 10,
+            "crawler_params": {
+                "headless": True,
+                "verbose": False
+            },
+            "extra": {
+                "bypass_cache": True  # Equivalent to CacheMode.BYPASS
+            }
+        }
+        
+        try:
+            # Submit the crawl job to the Docker API
+            response = requests.post(
+                f"{CRAWL4AI_API_URL}/crawl",
+                headers=headers,
+                json=payload
+            )
+            response.raise_for_status()
+            task_id = response.json()["task_id"]
+            print(f"Submitted task for URL: {url}, Task ID: {task_id}")
+            
+            # Poll for the result
+            while True:
+                result_response = requests.get(
+                    f"{CRAWL4AI_API_URL}/task/{task_id}",
+                    headers=headers
+                )
+                result_response.raise_for_status()
+                status = result_response.json()
+                
+                if status["status"] == "completed":
+                    if status.get("result", {}).get("success", False):
+                        print(f"Successfully crawled: {url}")
+                        # Extract the markdown content
+                        markdown = status["result"]["markdown"]
+                        await process_and_store_document(url, markdown)
+                        # Mark URL as completed
+                        async with state_lock:
+                            state[url] = 'completed'
+                            save_state(state)
+                    else:
+                        error_msg = status.get('result', {}).get('error_message', 'Unknown error')
+                        print(f"Failed: {url} - Error: {error_msg}")
+                        # Mark URL as failed with error message
+                        async with state_lock:
+                            state[url] = 'failed'
+                            save_state(state)
+                    break
+                elif status["status"] == "failed":
+                    print(f"Failed: {url} - Task failed")
+                    # Mark URL as failed
+                    async with state_lock:
+                        state[url] = 'failed'
+                        save_state(state)
+                    break
+                
+                # Wait before polling again
+                await asyncio.sleep(10)
+                
+        except Exception as e:
+            print(f"Error processing URL {url}: {e}")
+            # Mark URL as failed with exception message
+            async with state_lock:
+                state[url] = 'failed'
+                save_state(state)
+
+async def crawl_parallel(urls: List[str], max_concurrent: int = 10, resume: bool = True):
+    """Crawl multiple URLs in parallel with resumability using local state file."""
     # Create a semaphore to limit concurrency
     semaphore = asyncio.Semaphore(max_concurrent)
     
-    # Setup headers for API authentication if token is provided
-    headers = {"Authorization": f"Bearer {CRAWL4AI_API_TOKEN}"} if CRAWL4AI_API_TOKEN else {}
+    # Create a lock for state updates
+    state_lock = asyncio.Lock()
     
-    async def process_url(url: str):
-        async with semaphore:
-            # Prepare the request payload for the Docker API
-            payload = {
-                "urls": url,
-                "priority": 10,
-                "crawler_params": {
-                    "headless": True,
-                    "verbose": False
-                },
-                "extra": {
-                    "bypass_cache": True  # Equivalent to CacheMode.BYPASS
-                }
-            }
-            
-            try:
-                # Submit the crawl job to the Docker API
-                response = requests.post(
-                    f"{CRAWL4AI_API_URL}/crawl",
-                    headers=headers,
-                    json=payload
-                )
-                response.raise_for_status()
-                task_id = response.json()["task_id"]
-                print(f"Submitted task for URL: {url}, Task ID: {task_id}")
-                
-                # Poll for the result
-                while True:
-                    result_response = requests.get(
-                        f"{CRAWL4AI_API_URL}/task/{task_id}",
-                        headers=headers
-                    )
-                    result_response.raise_for_status()
-                    status = result_response.json()
-                    
-                    if status["status"] == "completed":
-                        if status.get("result", {}).get("success", False):
-                            print(f"Successfully crawled: {url}")
-                            # Extract the markdown content
-                            markdown = status["result"]["markdown"]
-                            await process_and_store_document(url, markdown)
-                        else:
-                            print(f"Failed: {url} - Error: {status.get('result', {}).get('error_message', 'Unknown error')}")
-                        break
-                    elif status["status"] == "failed":
-                        print(f"Failed: {url} - Task failed")
-                        break
-                    
-                    # Wait before polling again
-                    await asyncio.sleep(10)
-                    
-            except Exception as e:
-                print(f"Error processing URL {url}: {e}")
+    # Load the state from file if resuming
+    state = {}
+    if resume:
+        state = load_state()
     
     # Process all URLs in parallel with limited concurrency
-    await asyncio.gather(*[process_url(url) for url in urls])
+    tasks = []
+    for url in urls:
+        task = process_url(url, semaphore, state, state_lock)
+        tasks.append(task)
+    
+    await asyncio.gather(*tasks)
+    
+    # Print final statistics
+    print("\nCrawl completed!")
+    status_counts = {}
+    for status in state.values():
+        status_counts[status] = status_counts.get(status, 0) + 1
+    
+    for status, count in status_counts.items():
+        print(f"  - {status}: {count}")
 
 def get_pydantic_ai_docs_urls() -> List[str]:
-    """Get URLs from Pydantic AI docs sitemap."""
+    """Get URLs from dbt docs sitemap."""
     sitemap_url = "https://docs.getdbt.com/sitemap.xml"
     try:
         response = requests.get(sitemap_url)
@@ -414,14 +484,48 @@ def get_pydantic_ai_docs_urls() -> List[str]:
         return []
 
 async def main():
-    # Get URLs from Pydantic AI docs
+    # Get command line arguments
+    import argparse
+    parser = argparse.ArgumentParser(description='Crawl and process URLs with resumability')
+    parser.add_argument('--no-resume', action='store_true', help='Start fresh without resuming')
+    parser.add_argument('--max-concurrent', type=int, default=10, help='Maximum number of concurrent crawls')
+    parser.add_argument('--state-file', type=str, default=STATE_FILE, help='Path to state file')
+    args = parser.parse_args()
+    
+    # Update state file path if provided
+    global STATE_FILE
+    if args.state_file:
+        STATE_FILE = args.state_file
+        print(f"Using state file: {STATE_FILE}")
+    
+    # Get URLs from dbt docs
     urls = get_pydantic_ai_docs_urls()
     if not urls:
         print("No URLs found to crawl")
         return
     
     print(f"Found {len(urls)} URLs to crawl")
-    await crawl_parallel(urls)
+    
+    # Create a backup of the state file if it exists
+    if os.path.exists(STATE_FILE) and not args.no_resume:
+        backup_file = f"{STATE_FILE}.bak"
+        try:
+            import shutil
+            shutil.copy2(STATE_FILE, backup_file)
+            print(f"Created backup of state file: {backup_file}")
+        except Exception as e:
+            print(f"Warning: Failed to create backup of state file: {e}")
+    
+    # Start the crawl
+    try:
+        await crawl_parallel(urls, max_concurrent=args.max_concurrent, resume=not args.no_resume)
+    except KeyboardInterrupt:
+        print("\nCrawl interrupted by user. Progress has been saved to state file.")
+        print("Run the script again with the same state file to resume.")
+    except Exception as e:
+        print(f"\nCrawl failed with error: {e}")
+        print("Progress has been saved to state file.")
+        print("Run the script again with the same state file to resume.")
 
 if __name__ == "__main__":
     asyncio.run(main())
